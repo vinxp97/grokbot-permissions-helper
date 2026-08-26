@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>GrokbotPermissionsHelper</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.grokbot.permissionshelper</string>
+  <key>CFBundleName</key>
+  <string>Grokbot_Permissions_Helper</string>
+  <key>CFBundleDisplayName</key>
+  <string>Grokbot Permissions Helper</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSCalendarsUsageDescription</key>
+  <string>A desktop agent needs Calendar to read your schedule and add events.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>A desktop agent needs Calendar to read your schedule and add events.</string>
+  <key>NSContactsUsageDescription</key>
+  <string>A desktop agent needs Contacts to look up people you mention.</string>
+  <key>NSRemindersUsageDescription</key>
+  <string>A desktop agent needs Reminders to help you remember things.</string>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>A desktop agent needs Reminders to help you remember things.</string>
+</dict>
+</plist>

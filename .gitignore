@@ -1,0 +1,11 @@
+dist/
+*.app
+*.dSYM
+.DS_Store
+xcuserdata/
+*.xcuserstate
+.idea/
+.vscode/
+grokbot-permissions-helper-out.txt
+/tmp/
+*.swp
