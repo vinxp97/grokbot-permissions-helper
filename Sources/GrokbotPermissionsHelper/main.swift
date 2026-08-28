@@ -271,8 +271,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-app.run()
+let flags = Set(CommandLine.arguments.dropFirst())
+if flags.contains("--help") || flags.contains("-h") {
+    let help = """
+    Grokbot Permissions Helper
+      (no flags)     Calendar / Contacts / Reminders dump (Tony digest)
+      --mail-setup   Prompt for IMAP + optional webhook; store in Keychain
+      --mail-fetch   Fetch UNSEEN/new UIDs, queue, webhook if cooldown elapsed
+      --mail-check   Same fetch, POST webhook even during the 3-hour cooldown
+    Credentials stay in Keychain service com.grokbot.permissionshelper.mail.
+    Never prints passwords, tokens, webhook URLs, or IMAP hosts.
+    """
+    FileHandle.standardOutput.write(Data(help.utf8))
+    exit(0)
+} else if flags.contains("--mail-setup") {
+    MailSetup.run()
+} else if flags.contains("--mail-fetch") {
+    MailFetch.run(forceWebhook: false)
+} else if flags.contains("--mail-check") {
+    MailFetch.run(forceWebhook: true)
+} else {
+    let app = NSApplication.shared
+    let delegate = AppDelegate()
+    app.delegate = delegate
+    app.setActivationPolicy(.accessory)
+    app.run()
+}
