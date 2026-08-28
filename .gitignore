@@ -9,3 +9,12 @@ xcuserdata/
 grokbot-permissions-helper-out.txt
 /tmp/
 *.swp
+
+# Mail queue / webhook cursor (local only; never commit)
+queue.json
+last-webhook
+
+# Loaded launchd jobs and copied plists. Keep Resources/Info.plist and the example.
+*.plist
+!Resources/Info.plist
+!launchd/*.plist.example
