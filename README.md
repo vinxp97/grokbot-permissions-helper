@@ -1,8 +1,8 @@
 # Grokbot Permissions Helper
 
-**A tiny macOS app that lets a desktop agent use Calendar, Contacts, and Reminders without storing secrets.**
+**A tiny macOS app that lets a desktop agent use Calendar, Contacts, Reminders, and (optionally) an IMAP inbox without storing secrets in git.**
 
-macOS will not raise a TCC permission dialog for a raw `swift` script. It will for a real `.app` bundle. This helper is that bundle: it asks once, dumps a text snapshot, and quits.
+macOS will not raise a TCC permission dialog for a raw `swift` script. It will for a real `.app` bundle. This helper is that bundle: it asks once, dumps a text snapshot, and quits. IMAP credentials live in the macOS Keychain only.
 
 ```
 ┌─────────────┐     open .app      ┌──────────────────────────┐
@@ -10,14 +10,15 @@ macOS will not raise a TCC permission dialog for a raw `swift` script. It will f
 │  (on Mac)   │                    │ Helper.app               │
 └──────┬──────┘                    │  EventKit · Contacts     │
        │                           │  Shortcuts list          │
-       │  read dump                └────────────┬─────────────┘
-       ▼                                        │
+       │  read dump                │  optional IMAP TLS       │
+       ▼                           └────────────┬─────────────┘
  /tmp/grokbot-permissions-helper-out.txt  ◀─────┘
+       mail queue (Application Support)   ◀─────┘
 ```
 
-| Calendar | Contacts | Reminders | Home |
-| --- | --- | --- | --- |
-| Read events (today + next days) | Count + a few samples | Incomplete items in a window | Lists matching Shortcuts (no HomeKit) |
+| Calendar | Contacts | Reminders | Home | Mail |
+| --- | --- | --- | --- | --- |
+| Read events (today + next days) | Count + a few samples | Incomplete items in a window | Lists matching Shortcuts (no HomeKit) | IMAP UNSEEN/new UIDs → local queue + optional webhook |
 
 > Agents: start at [AGENTS.md](AGENTS.md). Humans: stay here.
 
@@ -33,8 +34,11 @@ This helper:
 2. Requests **full** Calendar, Reminders, and Contacts access **only when status is still `notDetermined`**
 3. Writes a parseable dump to `/tmp/grokbot-permissions-helper-out.txt`
 4. Exits
+5. Optionally fetches IMAP over TLS and queues new message headers locally
 
 Rebuilds keep the same bundle identifier (`com.grokbot.permissionshelper`) and ad-hoc signature so macOS does not treat every build as a new app (which would re-prompt).
+
+If this Mac already granted TCC under a **different** live bundle id, rebuild with `BUNDLE_ID` (see Build) instead of changing `Resources/Info.plist` in git.
 
 HomeKit is intentionally **out**. Regular Mac apps cannot use it without Apple entitlements. Lights and scenes go through existing **Shortcuts**.
 
@@ -57,6 +61,76 @@ Click **Allow** for Calendar, Contacts, and Reminders the first time. Later laun
 ```bash
 cat /tmp/grokbot-permissions-helper-out.txt
 ```
+
+---
+
+## CLI modes
+
+Launch the Mach-O inside the bundle (not `open`, unless you pass `--args`).
+
+| Flag | What it does |
+| --- | --- |
+| *(none)* | Existing Calendar / Contacts / Reminders / Shortcuts dump. Do not change this path; weekday digest consumers depend on it. |
+| `--mail-setup` | AppKit form: IMAP host, port (default 993), username, password (secure field). Optional webhook URL and bearer. Saves to Keychain service `com.grokbot.permissionshelper.mail`. Never prints secrets. Blank password/bearer on a later run keeps the previous Keychain value. |
+| `--mail-fetch` | IMAP TLS: `LOGIN`, `SELECT INBOX`, `UID SEARCH` UNSEEN plus UIDs newer than last, `UID FETCH` headers. Appends new items to `~/Library/Application Support/GrokbotPermissionsHelper/queue.json`. If there are new items **and** the last auto webhook is older than 3 hours, POST JSON `{new_count, queued_count, messages:[{from,subject,date}]}` with `Authorization: Bearer` from Keychain, then record `lastWebhookAt`. During cooldown, only queue. |
+| `--mail-check` | Same fetch, then POST the webhook even during the 3-hour cooldown (manual / agent). |
+| `--help` | Short usage. |
+
+```bash
+BIN="$HOME/Applications/Grokbot_Permissions_Helper.app/Contents/MacOS/GrokbotPermissionsHelper"
+"$BIN" --mail-setup
+"$BIN" --mail-fetch
+"$BIN" --mail-check
+```
+
+IMAP is implicit TLS (Network.framework). Default port 993. LOGIN must be allowed on the server (app password, not account password, on providers that require it). No POP3, no SMTP.
+
+Stdout from mail modes is counts only (`MAIL: queued 2 new`). Hosts, usernames, passwords, webhook URLs, and tokens are never printed.
+
+---
+
+## Mail queue and webhook
+
+Local state (never commit):
+
+- `~/Library/Application Support/GrokbotPermissionsHelper/queue.json`
+- `~/Library/Application Support/GrokbotPermissionsHelper/last-webhook`
+
+Webhook body (new messages from that run, not the whole history):
+
+```json
+{
+  "new_count": 2,
+  "queued_count": 10,
+  "messages": [
+    { "from": "Ada <ada@example.com>", "subject": "Hello", "date": "Fri, 28 Aug 2026 09:00:00 -0400" }
+  ]
+}
+```
+
+If no webhook URL was saved in Keychain, fetch still queues. HTTPS is preferred; local HTTP is allowed via `NSAllowsLocalNetworking`.
+
+---
+
+## launchd (poll every 15 minutes)
+
+Template only: [launchd/com.grokbot.permissionshelper.mail.plist.example](launchd/com.grokbot.permissionshelper.mail.plist.example). Placeholders — no hosts, accounts, or URLs.
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cp launchd/com.grokbot.permissionshelper.mail.plist.example \
+  ~/Library/LaunchAgents/com.grokbot.permissionshelper.mail.plist
+# Edit YOUR_USERNAME (and the .app path if you installed elsewhere).
+launchctl bootstrap gui/"$(id -u)" ~/Library/LaunchAgents/com.grokbot.permissionshelper.mail.plist
+```
+
+Unload:
+
+```bash
+launchctl bootout gui/"$(id -u)" ~/Library/LaunchAgents/com.grokbot.permissionshelper.mail.plist
+```
+
+Do not copy the loaded plist back into this repo. `.gitignore` drops `*.plist` except `Resources/Info.plist` and `launchd/*.plist.example`.
 
 ---
 
@@ -107,33 +181,50 @@ Times use the **Mac's current timezone**, not a hardcoded zone.
 | `GROKBOT_HELPER_REM_LOOKBACK_DAYS` | `7` | Incomplete reminders window behind |
 | `GROKBOT_HELPER_REM_FORWARD_DAYS` | `14` | Incomplete reminders window ahead |
 | `GROKBOT_HELPER_CONTACT_SAMPLES` | `8` | How many contact rows to include |
+| `BUNDLE_ID` | `com.grokbot.permissionshelper` | Build-time bundle id + codesign identifier |
 
-`open` does not pass env into GUI apps. To set these, launch the binary inside the bundle:
+`open` does not pass env into GUI apps. To set dump knobs, launch the binary inside the bundle:
 
 ```bash
 GROKBOT_HELPER_CAL_DAYS=7 \
   "$HOME/Applications/Grokbot_Permissions_Helper.app/Contents/MacOS/GrokbotPermissionsHelper"
 ```
 
+### Build-time bundle id
+
+```bash
+./scripts/build.sh
+# Live Mac that already has TCC under the historical identifier:
+BUNDLE_ID=com.vincentderiu.grokbotpermissionshelper ./scripts/build.sh
+```
+
+Leave `Resources/Info.plist` in git at `com.grokbot.permissionshelper`. `build.sh` rewrites only the **copied** plist inside the `.app`.
+
 ---
 
 ## Security
 
-- **No network.** The helper never uploads. An agent only sees what it reads from the dump file on this Mac.
-- **No secrets in git.** Do not commit dump files, TCC databases, or personal event/contact data.
+- **No secrets in git.** This repo is public. Do not commit dump files, `queue.json`, `last-webhook`, loaded launchd plists, Keychain exports, passwords, webhook URLs, bearer tokens, personal emails, or IMAP hosts.
+- **Keychain only for mail.** Service `com.grokbot.permissionshelper.mail`. The helper never prints those values.
+- **IMAP + optional webhook.** Calendar dump still does not upload. Mail modes speak IMAP TLS to the host you entered and may POST header summaries to the webhook you entered.
 - **Ad-hoc signed.** Fine for a personal Mac. Not notarized; Gatekeeper may ask you to open it once via System Settings → Privacy & Security.
-- **Stable identity.** `codesign --identifier com.grokbot.permissionshelper` so grants survive rebuilds.
-- **Least surprise.** Access is requested only when still `notDetermined`. Denied/restricted stays denied; the dump reports it.
+- **Stable identity.** `codesign --identifier` matches `BUNDLE_ID` so grants survive rebuilds.
+- **Least surprise.** Calendar/Contacts/Reminders are requested only when still `notDetermined`. Denied/restricted stays denied; the dump reports it.
 
 ---
 
 ## Project layout
 
 ```
-Sources/GrokbotPermissionsHelper/main.swift   # the app
-Resources/Info.plist                          # TCC usage strings
-scripts/build.sh                              # compile, bundle, ad-hoc sign
-AGENTS.md                                     # download / install / utilize for agents
+Sources/GrokbotPermissionsHelper/main.swift        # dump app + CLI dispatch
+Sources/GrokbotPermissionsHelper/IMAPClient.swift  # IMAP TLS (Network.framework)
+Sources/GrokbotPermissionsHelper/MailKeychain.swift
+Sources/GrokbotPermissionsHelper/MailSetup.swift
+Sources/GrokbotPermissionsHelper/MailFetch.swift
+Resources/Info.plist                               # TCC usage strings
+scripts/build.sh                                   # compile, bundle, ad-hoc sign
+launchd/com.grokbot.permissionshelper.mail.plist.example
+AGENTS.md                                          # download / install / utilize for agents
 ```
 
 ## License
