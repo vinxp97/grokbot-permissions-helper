@@ -2,17 +2,19 @@
 
 Instructions for coding / desktop agents. Humans can follow them too. Point your agent at this file.
 
-**What this is:** a macOS `.app` that can receive TCC prompts for Calendar, Contacts, and Reminders. A CLI `swift` file cannot. You launch the app on the user's Mac, then read a text dump. You do not store Apple passwords, CalDAV tokens, or address-book exports in git.
+**What this is:** a macOS `.app` that can receive TCC prompts for Calendar, Contacts, and Reminders, and can fetch IMAP over TLS. A CLI `swift` file cannot raise those TCC prompts. You launch the app on the user's Mac, then read a text dump (calendar) or a local mail queue. You do not store Apple passwords, CalDAV tokens, IMAP passwords, webhook URLs, bearer tokens, or address-book exports in git.
 
 **What this is not:** HomeKit. Use existing Shortcuts (`/usr/bin/shortcuts list` / `shortcuts run`). The helper only *lists* shortcut names that look home-related.
 
-Do not commit `/tmp/grokbot-permissions-helper-out.txt`, contact rows, or calendar events.
+Do not commit `/tmp/grokbot-permissions-helper-out.txt`, contact rows, calendar events, `queue.json`, `last-webhook`, loaded launchd plists, or anything from Keychain.
+
+This repository is **public**. Never commit secrets: no passwords, no webhook URLs, no bearer tokens, no personal emails, no IMAP hosts.
 
 ---
 
 ## 1. Download
 
-Private repo (needs GitHub access the user already granted):
+Private-or-public clone (needs GitHub access the user already granted):
 
 ```bash
 git clone git@github.com:vinxp97/grokbot-permissions-helper.git
@@ -25,11 +27,12 @@ HTTPS if SSH is not set up:
 git clone https://github.com/vinxp97/grokbot-permissions-helper.git
 ```
 
-You only need:
+You need:
 
-- `Sources/GrokbotPermissionsHelper/main.swift`
+- `Sources/GrokbotPermissionsHelper/*.swift`
 - `Resources/Info.plist`
 - `scripts/build.sh`
+- `launchd/com.grokbot.permissionshelper.mail.plist.example` (mail poll only)
 
 Build **on the user's Mac** (Darwin). Linux cloud agents cannot compile this.
 
@@ -53,9 +56,17 @@ Optional custom output path:
 
 The script:
 
-1. Compiles `main.swift` against AppKit, EventKit, Contacts
+1. Compiles every `Sources/GrokbotPermissionsHelper/*.swift` against AppKit, EventKit, Contacts, Security, Network
 2. Wraps it in an `.app` with `Info.plist` usage strings
-3. Ad-hoc signs with identifier `com.grokbot.permissionshelper`
+3. Ad-hoc signs with identifier `com.grokbot.permissionshelper` unless `BUNDLE_ID` is set
+
+**Live Mac TCC:** if Calendar/Contacts/Reminders were already granted under `com.vincentderiu.grokbotpermissionshelper`, rebuild with that id so macOS does not treat it as a new app:
+
+```bash
+BUNDLE_ID=com.vincentderiu.grokbotpermissionshelper ./scripts/build.sh
+```
+
+Do not change the default in `Resources/Info.plist` in git. Override at build time only.
 
 **First run (user must click Allow):**
 
@@ -76,17 +87,19 @@ If Gatekeeper blocks the unsigned app, tell the user to open **System Settings �
 
 If Calendar/Contacts/Reminders still say `denied` or `restricted`, **do not keep launching to re-prompt**. macOS will not show the dialog again until the user flips the toggle under System Settings → Privacy & Security → Calendar / Contacts / Reminders for **Grokbot Permissions Helper**. Ask the user to enable those, then run once more.
 
-Rebuilds must keep bundle id `com.grokbot.permissionshelper` and the same `--identifier` on `codesign`, or TCC treats it as a new app and prompts again.
+Rebuilds must keep the same bundle id and the same `--identifier` on `codesign`, or TCC treats it as a new app and prompts again.
 
 ---
 
 ## 3. Implement / utilize
 
-### When to launch
+### When to launch (calendar dump)
 
-Launch the helper whenever you need a fresh snapshot of calendars, incomplete reminders, a contact lookup, or the list of home-ish Shortcuts. Typical: weekday morning digest, "what's on my calendar", "add a reminder" (read first, then use EventKit via a follow-up you design — this helper is read/dump only).
+Launch the helper **with no flags** whenever you need a fresh snapshot of calendars, incomplete reminders, a contact lookup, or the list of home-ish Shortcuts. Typical: weekday morning digest ("Tony digest"), "what's on my calendar", "add a reminder" (read first, then use EventKit via a follow-up you design — this helper's default path is read/dump only).
 
-### How to launch
+**Do not pass `--mail-*` flags for that digest.** Default (no flag) must stay the calendar/contacts/reminders dump.
+
+### How to launch (dump)
 
 Preferred (lets you pass env):
 
@@ -123,7 +136,7 @@ Read the dump as UTF-8 lines.
 - `KEY: value` for status and counts (`CAL_STATUS`, `CALENDAR`, `EVENTS`, …)
 - Tab-separated records:
   - `CAL` — title, source
-  - `EVT` — `allday` or `timed`, start ISO-8601, end ISO-8601, calendar, source, title, location
+  - `EVT` — `allday|timed`, start ISO-8601, end ISO-8601, calendar, source, title, location
   - `REMINDER_LIST` — title, source
   - `REM` — list, title, due ISO-8601 or `none`
   - `CONTACT` — name, email, phone
@@ -143,9 +156,72 @@ Never run a Shortcut that spends money, sends mail, or shares data unless the us
 
 ### Adding events or reminders
 
-This helper is **read-only dump**. To write, extend the Swift (keep the same bundle id) or use another EventKit helper. Do not scrape Calendar.app UI if this dump already has the data.
+The default helper path is **read-only dump**. To write, extend the Swift (keep the same bundle id) or use another EventKit helper. Do not scrape Calendar.app UI if this dump already has the data.
 
-### Hygiene
+---
+
+## 4. Mail (IMAP)
+
+Binary:
+
+```bash
+BIN="$HOME/Applications/Grokbot_Permissions_Helper.app/Contents/MacOS/GrokbotPermissionsHelper"
+```
+
+### Setup (needs the user at the Mac)
+
+`--mail-setup` shows an AppKit form. Do not run it unattended. Do not pass host/password on the command line. Do not log field values.
+
+```bash
+"$BIN" --mail-setup
+```
+
+Stores IMAP host, port (default 993), username, password, optional webhook URL, optional bearer in Keychain service `com.grokbot.permissionshelper.mail`. Never print Keychain contents.
+
+### Fetch (launchd / quiet poll)
+
+```bash
+"$BIN" --mail-fetch
+```
+
+TLS IMAP: LOGIN, SELECT INBOX, UID SEARCH UNSEEN (and newer UIDs), UID FETCH RFC822.HEADER. Appends new UIDs to `~/Library/Application Support/GrokbotPermissionsHelper/queue.json`. If there are new items and the last webhook is older than 3 hours, POSTs `{new_count, queued_count, messages:[{from,subject,date}]}` with `Authorization: Bearer` from Keychain, then writes `last-webhook`. During cooldown, only queue.
+
+Stdout is counts (`MAIL: queued N new`). Treat `MAIL_ERROR:` on stderr as failure. Do not dump the queue into chat unless the user asked for mail.
+
+### Manual check (agents)
+
+When the user asks to check mail **now**, or you need to notify past the 3-hour cooldown:
+
+```bash
+"$BIN" --mail-check
+```
+
+Same fetch as `--mail-fetch`, then POST the webhook even if cooldown is active.
+
+### launchd
+
+Copy the **example** only, edit the placeholder binary path, load as a user agent. Interval is 900 seconds (`--mail-fetch`).
+
+```bash
+mkdir -p "$HOME/Library/LaunchAgents"
+EXAMPLE="launchd/com.grokbot.permissionshelper.mail.plist.example"
+DEST="$HOME/Library/LaunchAgents/com.grokbot.permissionshelper.mail.plist"
+cp "$EXAMPLE" "$DEST"
+# replace YOUR_USERNAME in DEST — do not put secrets in the plist
+launchctl bootstrap gui/"$(id -u)" "$DEST"
+```
+
+Never commit the loaded plist, `queue.json`, or `last-webhook`.
+
+### Hygiene (mail)
+
+- Credentials: Keychain only. Do not write them to files in this repo or `/tmp`.
+- Do not print IMAP hosts, usernames, passwords, webhook URLs, or bearer tokens.
+- Queue JSON is personal mail metadata. Summarize for the user; do not forward to other agents or the network unless they asked (the webhook they configured is the exception).
+
+---
+
+## 5. Hygiene (general)
 
 - Do not paste dump contents into git, issues, or public chat.
 - Treat dump contents as personal data. Summarize for the user; do not forward contacts or event details to other agents or the network unless the user asked.
