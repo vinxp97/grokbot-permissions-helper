@@ -1,0 +1,14 @@
+{
+  "spf": "none",
+  "dkim": "none",
+  "dmarc": "none",
+  "dkim_d": "",
+  "dmarc_policy": "",
+  "header_from_domain": "example.com",
+  "envelope_from": "",
+  "return_path": "",
+  "reply_to": "",
+  "message_id_domain": "example.com",
+  "authentication_results": "",
+  "header_url_hosts": []
+}

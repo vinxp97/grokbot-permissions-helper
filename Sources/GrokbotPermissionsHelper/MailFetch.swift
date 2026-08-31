@@ -85,13 +85,7 @@ enum MailFetch {
         for env in envelopes {
             if seen.contains(env.uid) { continue }
             seen.insert(env.uid)
-            let item = QueuedMail(
-                uid: env.uid,
-                from: env.from,
-                subject: env.subject,
-                date: env.date,
-                queuedAt: now
-            )
+            let item = QueuedMail(from: env, queuedAt: now)
             queue.messages.append(item)
             added.append(item)
             if env.uid > queue.lastUID {
@@ -165,7 +159,7 @@ enum MailFetch {
         let bodyObj = WebhookBody(
             new_count: newItems.count,
             queued_count: queuedCount,
-            messages: newItems.map { WebhookMsg(from: $0.from, subject: $0.subject, date: $0.date) }
+            messages: newItems.map { WebhookMsg(from: $0) }
         )
         let body = try JSONEncoder().encode(bodyObj)
         var req = URLRequest(url: url)
@@ -212,6 +206,59 @@ struct QueuedMail: Codable {
     var subject: String
     var date: String
     var queuedAt: String
+    var spf: String
+    var dkim: String
+    var dmarc: String
+    var dkim_d: String
+    var dmarc_policy: String
+    var header_from_domain: String
+    var envelope_from: String
+    var return_path: String
+    var reply_to: String
+    var message_id_domain: String
+    var authentication_results: String
+    var header_url_hosts: [String]
+
+    init(from env: IMAPEnvelope, queuedAt: String) {
+        uid = env.uid
+        from = env.from
+        subject = env.subject
+        date = env.date
+        self.queuedAt = queuedAt
+        spf = env.auth.spf
+        dkim = env.auth.dkim
+        dmarc = env.auth.dmarc
+        dkim_d = env.auth.dkimD
+        dmarc_policy = env.auth.dmarcPolicy
+        header_from_domain = env.auth.headerFromDomain
+        envelope_from = env.auth.envelopeFrom
+        return_path = env.auth.returnPath
+        reply_to = env.auth.replyTo
+        message_id_domain = env.auth.messageIdDomain
+        authentication_results = env.auth.authenticationResults
+        header_url_hosts = env.auth.headerUrlHosts
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        uid = try c.decode(UInt32.self, forKey: .uid)
+        from = try c.decode(String.self, forKey: .from)
+        subject = try c.decode(String.self, forKey: .subject)
+        date = try c.decode(String.self, forKey: .date)
+        queuedAt = try c.decode(String.self, forKey: .queuedAt)
+        spf = try c.decodeIfPresent(String.self, forKey: .spf) ?? "none"
+        dkim = try c.decodeIfPresent(String.self, forKey: .dkim) ?? "none"
+        dmarc = try c.decodeIfPresent(String.self, forKey: .dmarc) ?? "none"
+        dkim_d = try c.decodeIfPresent(String.self, forKey: .dkim_d) ?? ""
+        dmarc_policy = try c.decodeIfPresent(String.self, forKey: .dmarc_policy) ?? ""
+        header_from_domain = try c.decodeIfPresent(String.self, forKey: .header_from_domain) ?? ""
+        envelope_from = try c.decodeIfPresent(String.self, forKey: .envelope_from) ?? ""
+        return_path = try c.decodeIfPresent(String.self, forKey: .return_path) ?? ""
+        reply_to = try c.decodeIfPresent(String.self, forKey: .reply_to) ?? ""
+        message_id_domain = try c.decodeIfPresent(String.self, forKey: .message_id_domain) ?? ""
+        authentication_results = try c.decodeIfPresent(String.self, forKey: .authentication_results) ?? ""
+        header_url_hosts = try c.decodeIfPresent([String].self, forKey: .header_url_hosts) ?? []
+    }
 }
 
 struct WebhookBody: Codable {
@@ -221,9 +268,41 @@ struct WebhookBody: Codable {
 }
 
 struct WebhookMsg: Codable {
+    var uid: UInt32
     var from: String
     var subject: String
     var date: String
+    var spf: String
+    var dkim: String
+    var dmarc: String
+    var dkim_d: String
+    var dmarc_policy: String
+    var header_from_domain: String
+    var envelope_from: String
+    var return_path: String
+    var reply_to: String
+    var message_id_domain: String
+    var authentication_results: String
+    var header_url_hosts: [String]
+
+    init(from item: QueuedMail) {
+        uid = item.uid
+        from = item.from
+        subject = item.subject
+        date = item.date
+        spf = item.spf
+        dkim = item.dkim
+        dmarc = item.dmarc
+        dkim_d = item.dkim_d
+        dmarc_policy = item.dmarc_policy
+        header_from_domain = item.header_from_domain
+        envelope_from = item.envelope_from
+        return_path = item.return_path
+        reply_to = item.reply_to
+        message_id_domain = item.message_id_domain
+        authentication_results = item.authentication_results
+        header_url_hosts = item.header_url_hosts
+    }
 }
 
 final class MailFetchDelegate: NSObject, NSApplicationDelegate {

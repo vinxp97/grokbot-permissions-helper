@@ -1,0 +1,16 @@
+{
+  "spf": "fail",
+  "dkim": "fail",
+  "dmarc": "fail",
+  "dkim_d": "evil.example",
+  "dmarc_policy": "none",
+  "header_from_domain": "victim.example",
+  "envelope_from": "phish@evil.example",
+  "return_path": "<phish@evil.example>",
+  "reply_to": "<phish@evil.example>",
+  "message_id_domain": "evil.example",
+  "authentication_results": "inbound.example-mx.com; spf=fail smtp.mailfrom=phish@evil.example; dkim=fail header.d=evil.example; dmarc=fail (p=none) header.from=victim.example",
+  "header_url_hosts": [
+    "www.evil.example"
+  ]
+}

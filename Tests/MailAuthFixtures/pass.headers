@@ -1,0 +1,10 @@
+From: Support <support@example-sender.com>
+Return-Path: <bounce@example-sender.com>
+Message-ID: <abc123@mail.example-sender.com>
+Authentication-Results: inbound.example-mx.com;
+       dkim=pass (2048-bit key) header.d=example-sender.com header.i=@example-sender.com;
+       spf=pass smtp.mailfrom=support@example-sender.com;
+       dmarc=pass (p=reject sp=reject) header.from=example-sender.com
+List-Unsubscribe: <https://www.example-sender.com/unsub>
+Subject: Verify contact
+Date: Sun, 30 Aug 2026 12:00:00 +0000
