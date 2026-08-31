@@ -30,6 +30,7 @@ struct IMAPEnvelope {
     var from: String
     var subject: String
     var date: String
+    var auth: MailAuth
 }
 
 /// Minimal IMAP4rev1 client over Network.framework implicit TLS (port 993).
@@ -47,10 +48,13 @@ final class IMAPClient {
         let tcp = NWProtocolTCP.Options()
         tcp.connectionTimeout = 15
         let params = NWParameters(tls: tls, tcp: tcp)
-        let p = UInt16(clamping: port <= 0 ? 993 : port)
+        let raw = UInt16(clamping: port <= 0 ? 993 : port)
+        guard let nwPort = NWEndpoint.Port(rawValue: raw) else {
+            fatalError("invalid IMAP port")
+        }
         connection = NWConnection(
             host: NWEndpoint.Host(host),
-            port: NWEndpoint.Port(p),
+            port: nwPort,
             using: params
         )
     }
@@ -339,7 +343,8 @@ final class IMAPClient {
             uid: uid,
             from: headers["from"] ?? "",
             subject: decodeRFC2047(headers["subject"] ?? ""),
-            date: headers["date"] ?? ""
+            date: headers["date"] ?? "",
+            auth: MailAuthParser.parse(text)
         )
     }
 
