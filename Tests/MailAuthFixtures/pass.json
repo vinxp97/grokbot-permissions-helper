@@ -1,0 +1,16 @@
+{
+  "spf": "pass",
+  "dkim": "pass",
+  "dmarc": "pass",
+  "dkim_d": "example-sender.com",
+  "dmarc_policy": "reject",
+  "header_from_domain": "example-sender.com",
+  "envelope_from": "bounce@example-sender.com",
+  "return_path": "<bounce@example-sender.com>",
+  "reply_to": "",
+  "message_id_domain": "mail.example-sender.com",
+  "authentication_results": "inbound.example-mx.com;       dkim=pass (2048-bit key) header.d=example-sender.com header.i=@example-sender.com;       spf=pass smtp.mailfrom=support@example-sender.com;       dmarc=pass (p=reject sp=reject) header.from=example-sender.com",
+  "header_url_hosts": [
+    "www.example-sender.com"
+  ]
+}

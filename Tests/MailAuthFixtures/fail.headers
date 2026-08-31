@@ -1,0 +1,8 @@
+From: "Helpdesk" <ceo@victim.example>
+Return-Path: <phish@evil.example>
+Reply-To: <phish@evil.example>
+Message-ID: <x@evil.example>
+Authentication-Results: inbound.example-mx.com; spf=fail smtp.mailfrom=phish@evil.example; dkim=fail header.d=evil.example; dmarc=fail (p=none) header.from=victim.example
+List-Unsubscribe: <https://www.evil.example/unsub>
+Subject: Urgent
+Date: Mon, 31 Aug 2026 12:00:00 +0000
