@@ -48,11 +48,7 @@ mkdir -p "$HOME/Applications"
 cp -R dist/Grokbot_Permissions_Helper.app "$HOME/Applications/"
 ```
 
-Optional custom output path:
-
-```bash
-./scripts/build.sh "$HOME/Applications/Grokbot_Permissions_Helper.app"
-```
+Build to `dist/` first, then copy the `.app`. Never pass the live `~/Applications/Grokbot_Permissions_Helper.app` as `build.sh` OUT (`rm -rf` runs first; a failed compile leaves an empty bundle).
 
 The script:
 
@@ -184,7 +180,9 @@ Stores IMAP host, port (default 993), username, password, optional webhook URL, 
 "$BIN" --mail-fetch
 ```
 
-TLS IMAP: LOGIN, SELECT INBOX, UID SEARCH UNSEEN (and newer UIDs), UID FETCH RFC822.HEADER. Appends new UIDs to `~/Library/Application Support/GrokbotPermissionsHelper/queue.json`. If there are new items and the last webhook is older than 3 hours, POSTs `{new_count, queued_count, messages:[{from,subject,date}]}` with `Authorization: Bearer` from Keychain, then writes `last-webhook`. During cooldown, only queue.
+TLS IMAP: LOGIN, SELECT INBOX, UID SEARCH UNSEEN (and newer UIDs), UID FETCH RFC822.HEADER. Parses SPF/DKIM/DMARC plus envelope/From/Reply-To/Message-ID domains and header `http(s)` hosts from that same header block (no body, no second IMAP). Appends new UIDs to `~/Library/Application Support/GrokbotPermissionsHelper/queue.json` (auth fields included; old queue rows without them still decode). If there are new items and the last webhook is older than 3 hours, POSTs JSON `{new_count, queued_count, messages:[{uid,from,subject,date,spf,dkim,dmarc,...}]}` with `Authorization: Bearer` from Keychain, then writes `last-webhook`. During cooldown, only queue.
+
+Webhook `spf`/`dkim`/`dmarc` are `pass`/`fail`/`none`. Missing Authentication-Results → `none`, never invent `pass`. Multiple AR headers: first in the block is inbound MX (servers prepend); later AR only fill methods the first did not mention. Helper is a JSON emitter; Helix (or other consumer) routes on those fields. Parser-only fixtures: `Tests/MailAuthFixtures` (pass / fail / missing-AR). Do not compile the AppKit app to run those — `swiftc` `MailAuthParser.swift` + `Tests/MailAuthParserMain.swift`.
 
 Stdout is counts (`MAIL: queued N new`). Treat `MAIL_ERROR:` on stderr as failure. Do not dump the queue into chat unless the user asked for mail.
 
@@ -220,6 +218,24 @@ Never commit the loaded plist, `queue.json`, or `last-webhook`.
 - Queue JSON is personal mail metadata. Summarize for the user; do not forward to other agents or the network unless they asked (the webhook they configured is the exception).
 
 ---
+
+### After a binary swap
+
+`scripts/build.sh` `rm -rf`s its OUT path first. Never pass the live `~/Applications/Grokbot_Permissions_Helper.app` as OUT — a failed compile leaves an empty bundle.
+
+After replacing or recodesigning the live `.app`, bootout then bootstrap the mail LaunchAgent. Leaving it loaded across a binary swap can spawn-fail with `OS_REASON_CODESIGNING` (stale LWCR).
+
+```bash
+DEST="$HOME/Library/LaunchAgents/com.grokbot.permissionshelper.mail.plist"
+launchctl bootout gui/"$(id -u)" "$DEST"
+launchctl bootstrap gui/"$(id -u)" "$DEST"
+```
+
+`Resources/Info.plist` must declare `CFBundleIconFile` = `AppIcon` (and `Resources/AppIcon.icns` must exist). Missing the key makes Finder/Dock show a blank icon.
+
+IMAP TLS uses `NWEndpoint.Port(rawValue:)`. `NWEndpoint.Port(p)` does not compile.
+
+Default dump path `/tmp/grokbot-permissions-helper-out.txt` is what weekday digest consumers read. Do not change it.
 
 ## 5. Hygiene (general)
 
