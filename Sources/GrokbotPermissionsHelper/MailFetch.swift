@@ -49,6 +49,16 @@ enum MailFetch {
         supportDir.appendingPathComponent("last-webhook")
     }
 
+    static let webhookBatchSize = 5
+    static let maxAuthResultsChars = 1024
+    static let webhookMaxBytes = 4000
+    static let webhookBatchSpacing: TimeInterval = 90
+    static let maxBatchesPerRun = 8
+
+    static var postedMigrationMarkerURL: URL {
+        supportDir.appendingPathComponent("postedAt-migrated")
+    }
+
     static func perform(forceWebhook: Bool) throws {
         let config = try MailKeychain.load()
         log("MAIL: connecting")
@@ -57,23 +67,25 @@ enum MailFetch {
         log("MAIL: connected")
 
         var queue = loadQueue()
-        if uidValidity != 0 && queue.uidValidity != 0 && queue.uidValidity != uidValidity {
+        migratePostedAtIfNeeded(&queue)
+
+        // Compare against the stored value before overwriting it.
+        let storedValidity = queue.uidValidity
+        if uidValidity != 0 && storedValidity != 0 && storedValidity != uidValidity {
+            log("MAIL: uidValidity changed; clearing queue and lastUID")
+            queue.messages = []
             queue.lastUID = 0
         }
         if uidValidity != 0 {
             queue.uidValidity = uidValidity
         }
 
-        let known: Set<UInt32>
-        if queue.uidValidity == uidValidity || uidValidity == 0 {
-            known = Set(queue.messages.map(\.uid))
-        } else {
-            known = []
-        }
-
-        let candidates = try client.searchUnseenAndNew(afterUID: queue.lastUID)
-        let newUIDs = candidates.filter { !known.contains($0) }
-        log("MAIL: unseen/new \(candidates.count) (new to queue \(newUIDs.count))")
+        let known = Set(queue.messages.map(\.uid))
+        let lastUIDBefore = queue.lastUID
+        let candidates = try client.searchNew(afterUID: lastUIDBefore)
+        // Never re-queue a UID at or below lastUID.
+        let newUIDs = candidates.filter { !known.contains($0) && $0 > lastUIDBefore }
+        log("MAIL: new \(candidates.count) (new to queue \(newUIDs.count))")
 
         let cap = Array(newUIDs.prefix(50))
         let envelopes = try client.fetchHeaders(uids: cap)
@@ -82,18 +94,22 @@ enum MailFetch {
         let now = ISO8601DateFormatter().string(from: Date())
         var added: [QueuedMail] = []
         var seen = known
+        var parsed = Set<UInt32>()
         for env in envelopes {
+            parsed.insert(env.uid)
             if seen.contains(env.uid) { continue }
             seen.insert(env.uid)
             let item = QueuedMail(from: env, queuedAt: now)
             queue.messages.append(item)
             added.append(item)
+            // Advance only to UIDs that actually parsed.
             if env.uid > queue.lastUID {
                 queue.lastUID = env.uid
             }
         }
-        for uid in cap where uid > queue.lastUID {
-            queue.lastUID = uid
+        let unparsed = cap.filter { !parsed.contains($0) }
+        if !unparsed.isEmpty {
+            log("MAIL: warning: \(unparsed.count) UID(s) did not parse: \(unparsed.map(String.init).joined(separator: ","))")
         }
         if queue.messages.count > maxQueue {
             queue.messages = Array(queue.messages.suffix(maxQueue))
@@ -101,15 +117,16 @@ enum MailFetch {
         try saveQueue(queue)
         log("MAIL: queued \(added.count) new (total \(queue.messages.count))")
 
+        let pending = queue.messages.filter { $0.postedAt == nil }.sorted { $0.uid < $1.uid }
         let shouldPost: Bool
-        if added.isEmpty {
+        if pending.isEmpty {
             shouldPost = false
             log("MAIL: no new messages")
         } else if forceWebhook {
             shouldPost = true
         } else if webhookCooldownActive() {
             shouldPost = false
-            log("MAIL: webhook skipped (cooldown)")
+            log("MAIL: webhook skipped (cooldown, \(pending.count) pending)")
         } else {
             shouldPost = true
         }
@@ -119,9 +136,93 @@ enum MailFetch {
             log("MAIL: webhook skipped (not configured)")
             return
         }
-        try postWebhook(config: config, urlString: hook, newItems: added, queuedCount: queue.messages.count)
+
+        // Pack pending items into batches of at most webhookBatchSize messages and
+        // webhookMaxBytes bytes. A single oversized item still goes alone.
+        var batches: [[QueuedMail]] = []
+        var current: [QueuedMail] = []
+        for item in pending {
+            let trial = current + [item]
+            let trialBytes = try encodeBatch(trial, index: 1, total: 1, queuedCount: queue.messages.count).count
+            if !current.isEmpty, trial.count > webhookBatchSize || trialBytes > webhookMaxBytes {
+                batches.append(current)
+                current = [item]
+            } else {
+                current = trial
+            }
+        }
+        if !current.isEmpty { batches.append(current) }
+        let total = batches.count
+        let thisRun = Array(batches.prefix(maxBatchesPerRun))
+        var postedCount = 0
+        for (idx, batch) in thisRun.enumerated() {
+            if idx > 0 {
+                // Pace POSTs so the receiver does not coalesce or drop back-to-back requests.
+                Thread.sleep(forTimeInterval: webhookBatchSpacing)
+            }
+            let label = "batch \(idx + 1)/\(total)"
+            let body = try encodeBatch(batch, index: idx + 1, total: total, queuedCount: queue.messages.count)
+            log("MAIL: webhook bytes \(body.count) \(label)")
+            let status: Int
+            do {
+                status = try postWebhook(config: config, urlString: hook, body: body)
+            } catch {
+                log("MAIL: webhook failed \(label): \(error.localizedDescription)")
+                throw error
+            }
+            log("MAIL: webhook HTTP \(status) \(label) uids \(batch.map { String($0.uid) }.joined(separator: ","))")
+            // Mark posted only after a 2xx, and persist per batch.
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            let batchUIDs = Set(batch.map(\.uid))
+            for j in queue.messages.indices where batchUIDs.contains(queue.messages[j].uid) {
+                queue.messages[j].postedAt = stamp
+            }
+            try saveQueue(queue)
+            postedCount += batch.count
+        }
+        if thisRun.count < total {
+            // Leave last-webhook alone so the next tick continues the backlog past the cooldown.
+            log("MAIL: webhook posted (\(postedCount) of \(pending.count) pending; \(total - thisRun.count) batch(es) left for next run)")
+            return
+        }
         recordWebhook()
-        log("MAIL: webhook posted (\(added.count) new)")
+        log("MAIL: webhook posted (\(postedCount) pending, \(added.count) new this run)")
+    }
+
+    /// Metadata first, then messages, in a fixed key order so a receiver that
+    /// truncates still sees batch_index/batch_total/uid range/counts.
+    static func encodeBatch(_ batch: [QueuedMail], index: Int, total: Int, queuedCount: Int) throws -> Data {
+        var out = Data()
+        let head = "{\"batch_index\":\(index),\"batch_total\":\(total),"
+            + "\"first_uid\":\(batch.first?.uid ?? 0),\"last_uid\":\(batch.last?.uid ?? 0),"
+            + "\"new_count\":\(batch.count),\"queued_count\":\(queuedCount),"
+            + "\"uids\":[\(batch.map { String($0.uid) }.joined(separator: ","))],\"messages\":["
+        out.append(Data(head.utf8))
+        let enc = JSONEncoder()
+        for (i, item) in batch.enumerated() {
+            if i > 0 { out.append(Data(",".utf8)) }
+            out.append(try enc.encode(WebhookMsg(from: item)))
+        }
+        out.append(Data("]}".utf8))
+        return out
+    }
+
+    /// One-time back-compat: a queue written before postedAt existed has no way to
+    /// know what was already sent. If no item carries postedAt and the marker is
+    /// missing, treat everything as posted so the upgrade does not resend history.
+    static func migratePostedAtIfNeeded(_ queue: inout MailQueue) {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: postedMigrationMarkerURL.path) else { return }
+        if !queue.messages.isEmpty && queue.messages.allSatisfy({ $0.postedAt == nil }) {
+            let stamp = ISO8601DateFormatter().string(from: Date())
+            for j in queue.messages.indices {
+                queue.messages[j].postedAt = stamp
+            }
+            try? saveQueue(queue)
+            log("MAIL: migrated \(queue.messages.count) legacy queue item(s) to postedAt")
+        }
+        try? ISO8601DateFormatter().string(from: Date())
+            .write(to: postedMigrationMarkerURL, atomically: true, encoding: .utf8)
     }
 
     static func webhookCooldownActive() -> Bool {
@@ -151,17 +252,13 @@ enum MailFetch {
         try data.write(to: queueURL, options: .atomic)
     }
 
-    static func postWebhook(config: MailKeychain.Config, urlString: String, newItems: [QueuedMail], queuedCount: Int) throws {
+    /// POST one prebuilt JSON body. Returns the HTTP status on 2xx; throws otherwise.
+    /// last-webhook is written by the caller only after every batch got a 2xx.
+    static func postWebhook(config: MailKeychain.Config, urlString: String, body: Data) throws -> Int {
         guard let url = URL(string: urlString), let scheme = url.scheme?.lowercased(),
               scheme == "https" || scheme == "http" else {
             throw MailFetchError.badWebhook
         }
-        let bodyObj = WebhookBody(
-            new_count: newItems.count,
-            queued_count: queuedCount,
-            messages: newItems.map { WebhookMsg(from: $0) }
-        )
-        let body = try JSONEncoder().encode(bodyObj)
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -187,6 +284,7 @@ enum MailFetch {
         if status < 200 || status >= 300 {
             throw MailFetchError.httpStatus(status)
         }
+        return status
     }
 
     static func log(_ line: String) {
@@ -218,6 +316,7 @@ struct QueuedMail: Codable {
     var message_id_domain: String
     var authentication_results: String
     var header_url_hosts: [String]
+    var postedAt: String?
 
     init(from env: IMAPEnvelope, queuedAt: String) {
         uid = env.uid
@@ -235,8 +334,9 @@ struct QueuedMail: Codable {
         return_path = env.auth.returnPath
         reply_to = env.auth.replyTo
         message_id_domain = env.auth.messageIdDomain
-        authentication_results = env.auth.authenticationResults
+        authentication_results = String(env.auth.authenticationResults.prefix(MailFetch.maxAuthResultsChars))
         header_url_hosts = env.auth.headerUrlHosts
+        postedAt = nil
     }
 
     init(from decoder: Decoder) throws {
@@ -258,13 +358,8 @@ struct QueuedMail: Codable {
         message_id_domain = try c.decodeIfPresent(String.self, forKey: .message_id_domain) ?? ""
         authentication_results = try c.decodeIfPresent(String.self, forKey: .authentication_results) ?? ""
         header_url_hosts = try c.decodeIfPresent([String].self, forKey: .header_url_hosts) ?? []
+        postedAt = try c.decodeIfPresent(String.self, forKey: .postedAt)
     }
-}
-
-struct WebhookBody: Codable {
-    var new_count: Int
-    var queued_count: Int
-    var messages: [WebhookMsg]
 }
 
 struct WebhookMsg: Codable {
@@ -300,7 +395,7 @@ struct WebhookMsg: Codable {
         return_path = item.return_path
         reply_to = item.reply_to
         message_id_domain = item.message_id_domain
-        authentication_results = item.authentication_results
+        authentication_results = String(item.authentication_results.prefix(MailFetch.maxAuthResultsChars))
         header_url_hosts = item.header_url_hosts
     }
 }
