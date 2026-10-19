@@ -180,7 +180,7 @@ Stores IMAP host, port (default 993), username, password, optional webhook URL, 
 "$BIN" --mail-fetch
 ```
 
-TLS IMAP: LOGIN, SELECT INBOX, UID SEARCH UNSEEN (and newer UIDs), UID FETCH RFC822.HEADER. Parses SPF/DKIM/DMARC plus envelope/From/Reply-To/Message-ID domains and header `http(s)` hosts from that same header block (no body, no second IMAP). Appends new UIDs to `~/Library/Application Support/GrokbotPermissionsHelper/queue.json` (auth fields included; old queue rows without them still decode). If there are new items and the last webhook is older than 3 hours, POSTs JSON `{new_count, queued_count, messages:[{uid,from,subject,date,spf,dkim,dmarc,...}]}` with `Authorization: Bearer` from Keychain, then writes `last-webhook`. During cooldown, only queue.
+TLS IMAP: LOGIN, SELECT INBOX, UID SEARCH UID <lastUID+1>:* (read or unread; UNSEEN only when lastUID is 0), UID FETCH BODY.PEEK[HEADER] (never sets \Seen), max 50 per run. lastUID only advances to UIDs that parsed; unparsed UIDs are logged as a warning. A UIDVALIDITY change clears the queue and lastUID. Parses SPF/DKIM/DMARC plus envelope/From/Reply-To/Message-ID domains and header `http(s)` hosts from that same header block (no body, no second IMAP). Appends new UIDs to `~/Library/Application Support/GrokbotPermissionsHelper/queue.json` (auth fields included; old queue rows without them still decode). Each queue item has `postedAt` (null until a 2xx). If any item is unposted and the last webhook is older than 3 hours, POSTs them in batches (≤5 messages, ≤4000 bytes, ≥90 s apart, ≤8 batches per run) as `{batch_index, batch_total, first_uid, last_uid, new_count, queued_count, uids, messages:[{uid,from,subject,date,spf,dkim,dmarc,...}]}` with `Authorization: Bearer` from Keychain. Failed POSTs are retried next run. `last-webhook` is written only after every batch of the run got a 2xx. Stdout logs `MAIL: webhook bytes N batch i/n` and the HTTP status, never the URL or bearer. During cooldown, only queue. A legacy queue with no `postedAt` anywhere is marked posted once on upgrade (marker file `postedAt-migrated`).
 
 Webhook `spf`/`dkim`/`dmarc` are `pass`/`fail`/`none`. Missing Authentication-Results → `none`, never invent `pass`. Multiple AR headers: first in the block is inbound MX (servers prepend); later AR only fill methods the first did not mention. Helper is a JSON emitter; Helix (or other consumer) routes on those fields. Parser-only fixtures: `Tests/MailAuthFixtures` (pass / fail / missing-AR). Do not compile the AppKit app to run those — `swiftc` `MailAuthParser.swift` + `Tests/MailAuthParserMain.swift`.
 
@@ -194,7 +194,7 @@ When the user asks to check mail **now**, or you need to notify past the 3-hour 
 "$BIN" --mail-check
 ```
 
-Same fetch as `--mail-fetch`, then POST the webhook even if cooldown is active.
+Same fetch as `--mail-fetch`, then POST every unposted item even if cooldown is active.
 
 ### launchd
 

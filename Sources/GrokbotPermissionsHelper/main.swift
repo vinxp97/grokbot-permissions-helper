@@ -277,8 +277,8 @@ if flags.contains("--help") || flags.contains("-h") {
     Grokbot Permissions Helper
       (no flags)     Calendar / Contacts / Reminders dump (Tony digest)
       --mail-setup   Prompt for IMAP + optional webhook; store in Keychain
-      --mail-fetch   Fetch UNSEEN/new UIDs, queue, webhook if cooldown elapsed
-      --mail-check   Same fetch, POST webhook even during the 3-hour cooldown
+      --mail-fetch   Fetch UIDs newer than the last one, queue, POST unposted if cooldown elapsed
+      --mail-check   Same fetch, POST all unposted items even during the 3-hour cooldown
     Credentials stay in Keychain service com.grokbot.permissionshelper.mail.
     Never prints passwords, tokens, webhook URLs, or IMAP hosts.
     """

@@ -34,7 +34,8 @@ struct IMAPEnvelope {
 }
 
 /// Minimal IMAP4rev1 client over Network.framework implicit TLS (port 993).
-/// Commands used: CAPABILITY, LOGIN, SELECT INBOX, UID SEARCH, UID FETCH, LOGOUT.
+/// Commands used: CAPABILITY, LOGIN, SELECT INBOX, UID SEARCH, UID FETCH BODY.PEEK[HEADER], LOGOUT.
+/// Header-only PEEK fetches never set \Seen.
 final class IMAPClient {
     private let connection: NWConnection
     private let nwQueue = DispatchQueue(label: "com.grokbot.permissionshelper.imap")
@@ -79,18 +80,16 @@ final class IMAPClient {
         return Self.parseUIDValidity(sel.untagged) ?? 0
     }
 
-    func searchUnseenAndNew(afterUID: UInt32) throws -> [UInt32] {
-        var ids = Set<UInt32>()
-        let unseen = try runCommand("UID SEARCH UNSEEN")
-        guard unseen.ok else { throw IMAPError.commandFailed }
-        Self.parseSearch(unseen.untagged).forEach { ids.insert($0) }
-        if afterUID > 0 {
-            let newer = try runCommand("UID SEARCH UID \(afterUID + 1):*")
-            if newer.ok {
-                Self.parseSearch(newer.untagged).forEach { ids.insert($0) }
-            }
-        }
-        return ids.filter { $0 > 0 }.sorted()
+    /// UIDs newer than the cursor, read or unread (`UID SEARCH UID n+1:*`).
+    /// Servers echo the highest existing UID for `n+1:*` when nothing is newer, so
+    /// anything at or below the cursor is dropped. With no cursor yet (first run or
+    /// after a UIDVALIDITY reset) fall back to UNSEEN so a fresh install does not
+    /// queue the whole mailbox.
+    func searchNew(afterUID: UInt32) throws -> [UInt32] {
+        let command = afterUID > 0 ? "UID SEARCH UID \(afterUID + 1):*" : "UID SEARCH UNSEEN"
+        let reply = try runCommand(command)
+        guard reply.ok else { throw IMAPError.commandFailed }
+        return Set(Self.parseSearch(reply.untagged)).filter { $0 > afterUID }.sorted()
     }
 
     func fetchHeaders(uids: [UInt32]) throws -> [IMAPEnvelope] {
@@ -101,7 +100,7 @@ final class IMAPClient {
             let end = min(i + 20, uids.count)
             let slice = uids[i..<end]
             let set = slice.map(String.init).joined(separator: ",")
-            let resp = try runCommand("UID FETCH \(set) (UID RFC822.HEADER)")
+            let resp = try runCommand("UID FETCH \(set) (UID BODY.PEEK[HEADER])")
             guard resp.ok else { throw IMAPError.commandFailed }
             out.append(contentsOf: Self.parseFetch(resp.blob))
             i = end

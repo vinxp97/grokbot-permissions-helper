@@ -18,7 +18,7 @@ macOS will not raise a TCC permission dialog for a raw `swift` script. It will f
 
 | Calendar | Contacts | Reminders | Home | Mail |
 | --- | --- | --- | --- | --- |
-| Read events (today + next days) | Count + a few samples | Incomplete items in a window | Lists matching Shortcuts (no HomeKit) | IMAP UNSEEN/new UIDs → local queue + optional webhook |
+| Read events (today + next days) | Count + a few samples | Incomplete items in a window | Lists matching Shortcuts (no HomeKit) | IMAP UIDs newer than the last one → local queue + optional webhook |
 
 ---
 
@@ -70,8 +70,8 @@ Launch the Mach-O inside the bundle (not `open`, unless you pass `--args`).
 | --- | --- |
 | *(none)* | Calendar / Contacts / Reminders / Shortcuts dump to `/tmp/grokbot-permissions-helper-out.txt`. |
 | `--mail-setup` | AppKit form: IMAP host, port (default 993), username, password (secure field). Optional webhook URL and bearer. Saves to Keychain service `com.grokbot.permissionshelper.mail`. Never prints secrets. Blank password/bearer on a later run keeps the previous Keychain value. |
-| `--mail-fetch` | IMAP TLS: `LOGIN`, `SELECT INBOX`, `UID SEARCH` UNSEEN plus UIDs newer than last, `UID FETCH RFC822.HEADER`. Parses SPF/DKIM/DMARC from that header block (no body, no second IMAP). Appends new items to `~/Library/Application Support/GrokbotPermissionsHelper/queue.json`. If there are new items **and** the last auto webhook is older than 3 hours, POST JSON (see below) with `Authorization: Bearer` from Keychain, then record `lastWebhookAt`. During cooldown, only queue. |
-| `--mail-check` | Same fetch, then POST the webhook even during the 3-hour cooldown (manual / agent). |
+| `--mail-fetch` | IMAP TLS: `LOGIN`, `SELECT INBOX`, `UID SEARCH UID <lastUID+1>:*` (read or unread; UNSEEN only on the very first run), `UID FETCH BODY.PEEK[HEADER]` (never marks mail seen). Up to 50 new UIDs per run; `lastUID` only advances to UIDs that parsed. Parses SPF/DKIM/DMARC from that header block (no body, no second IMAP). Appends new items to `~/Library/Application Support/GrokbotPermissionsHelper/queue.json`. If any queued item is unposted (`postedAt` null) **and** the last webhook is older than 3 hours, POST them (see below) with `Authorization: Bearer` from Keychain. Items are marked posted only after HTTP 2xx; failures retry next run. During cooldown, only queue. |
+| `--mail-check` | Same fetch, then POST every unposted item even during the 3-hour cooldown (manual / agent). |
 | `--help` | Short usage. |
 
 ```bash
@@ -94,12 +94,17 @@ Local state (never commit):
 - `~/Library/Application Support/GrokbotPermissionsHelper/queue.json`
 - `~/Library/Application Support/GrokbotPermissionsHelper/last-webhook`
 
-Webhook body (new messages from that run, not the whole history):
+Webhook body: every queued item not yet posted, split into batches of at most 5 messages and 4000 bytes, POSTed at least 90 seconds apart (up to 8 batches per run; the rest go next run). Batch metadata comes first in a fixed key order. `new_count` is the number of messages in that POST. `authentication_results` is capped at 1024 characters.
 
 ```json
 {
-  "new_count": 2,
+  "batch_index": 1,
+  "batch_total": 1,
+  "first_uid": 12,
+  "last_uid": 12,
+  "new_count": 1,
   "queued_count": 10,
+  "uids": [12],
   "messages": [
     {
       "uid": 12,
