@@ -7,6 +7,14 @@
 #   BUNDLE_ID=com.vincentderiu.grokbotpermissionshelper ./scripts/build.sh
 # The public repo Info.plist default stays com.grokbot.permissionshelper.
 # Do not commit a live bundle id change; override at build time only.
+#
+# CODESIGN_IDENTITY env override (default "-" = ad-hoc). Ad-hoc signatures get a
+# cdhash designated requirement, so every rebuild looks like a new app to TCC.
+# Signing with a stable certificate (e.g. an "Apple Development: ..." identity from
+# `security find-identity -v -p codesigning`) keeps Calendar/Contacts/Reminders grants:
+#   CODESIGN_IDENTITY="Apple Development: NAME (TEAMID)" ./scripts/build.sh
+# Hardened runtime is intentionally not enabled (EventKit/Contacts would then need
+# personal-information entitlements).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -23,6 +31,8 @@ fi
 SDK="$(xcrun --show-sdk-path --sdk macosx)"
 MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 export MACOSX_DEPLOYMENT_TARGET
+
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 
 CONTENTS="$OUT/Contents"
 MACOS="$CONTENTS/MacOS"
@@ -70,11 +80,13 @@ if [[ -f "$ROOT/Resources/AppIcon.icns" ]]; then
   cp "$ROOT/Resources/AppIcon.icns" "$RES/AppIcon.icns"
 fi
 
-# Ad-hoc sign with a stable identifier so TCC grants stick across rebuilds.
-codesign --force --sign - --identifier "$BUNDLE_ID" "$OUT"
+# Sign with a stable identifier. Ad-hoc ("-") by default; set CODESIGN_IDENTITY to a
+# real certificate so the designated requirement survives rebuilds (TCC keeps grants).
+codesign --force --sign "$CODESIGN_IDENTITY" --identifier "$BUNDLE_ID" "$OUT"
 
 echo "Built $OUT"
 echo "Bundle id: $BUNDLE_ID"
+echo "Signed with: $([[ "$CODESIGN_IDENTITY" == "-" ]] && echo ad-hoc || echo "$CODESIGN_IDENTITY")"
 echo "Install: cp -R \"$OUT\" ~/Applications/"
 echo "First run: open \"$OUT\"   (click Allow on Calendar, Contacts, Reminders)"
 echo "Mail setup: \"$MACOS/$EXEC_NAME\" --mail-setup"
