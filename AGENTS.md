@@ -54,7 +54,9 @@ The script:
 
 1. Compiles every `Sources/GrokbotPermissionsHelper/*.swift` against AppKit, EventKit, Contacts, Security, Network
 2. Wraps it in an `.app` with `Info.plist` usage strings
-3. Ad-hoc signs with identifier `com.grokbot.permissionshelper` unless `BUNDLE_ID` is set
+3. Signs with identifier `com.grokbot.permissionshelper` unless `BUNDLE_ID` is set — ad-hoc by default, or with `CODESIGN_IDENTITY` if set
+
+**Stable signing (keeps TCC across rebuilds):** an ad-hoc signature's designated requirement is a cdhash, so every rebuild resets Calendar/Contacts/Reminders grants. Set `CODESIGN_IDENTITY` to a stable cert from `security find-identity -v -p codesigning` (e.g. an `Apple Development: …` identity) so the requirement is identifier + certificate and grants survive rebuilds. Do not hardcode the identity in git. The first build after switching signer needs one re-Allow. `codesign` may show a keychain prompt to use the private key; the user clicks **Always Allow** — never bypass it. Verify with `codesign -d -r- <app>`.
 
 **Live Mac TCC:** if Calendar/Contacts/Reminders were already granted under `com.vincentderiu.grokbotpermissionshelper`, rebuild with that id so macOS does not treat it as a new app:
 
@@ -83,7 +85,7 @@ If Gatekeeper blocks the unsigned app, tell the user to open **System Settings �
 
 If Calendar/Contacts/Reminders still say `denied` or `restricted`, **do not keep launching to re-prompt**. macOS will not show the dialog again until the user flips the toggle under System Settings → Privacy & Security → Calendar / Contacts / Reminders for **Grokbot Permissions Helper**. Ask the user to enable those, then run once more.
 
-Rebuilds must keep the same bundle id and the same `--identifier` on `codesign`, or TCC treats it as a new app and prompts again.
+Rebuilds must keep the same bundle id, the same `--identifier` on `codesign`, and the same `CODESIGN_IDENTITY`, or TCC treats it as a new app and prompts again.
 
 ---
 

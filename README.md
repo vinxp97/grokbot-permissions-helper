@@ -34,7 +34,7 @@ This helper:
 4. Exits
 5. Optionally fetches IMAP over TLS and queues new message headers locally
 
-Rebuilds keep the same bundle identifier (`com.grokbot.permissionshelper`) and ad-hoc signature so macOS does not treat every build as a new app (which would re-prompt).
+Rebuilds keep the same bundle identifier (`com.grokbot.permissionshelper`) and `codesign --identifier`. Ad-hoc signing still re-prompts after a rebuild (cdhash requirement); set `CODESIGN_IDENTITY` to a stable cert to avoid that.
 
 HomeKit is intentionally **out**. Regular Mac apps cannot use it without Apple entitlements. Lights and scenes go through existing **Shortcuts**.
 
@@ -219,6 +219,7 @@ GROKBOT_HELPER_CAL_DAYS=7 \
 - **Keychain only for mail.** Service `com.grokbot.permissionshelper.mail`. The helper never prints those values.
 - **IMAP + optional webhook.** Calendar dump still does not upload. Mail modes speak IMAP TLS to the host you entered and may POST header summaries to the webhook you entered.
 - **Ad-hoc signed.** Fine for a personal Mac. Not notarized; Gatekeeper may ask you to open it once via System Settings → Privacy & Security.
+- **Stable signer (optional).** Ad-hoc signatures pin TCC to a cdhash, so each rebuild re-prompts. Build with `CODESIGN_IDENTITY="Apple Development: …"` (any stable cert from `security find-identity -v -p codesigning`) to keep grants across rebuilds.
 - **Stable identity.** `codesign --identifier` matches the bundle id so grants survive rebuilds.
 - **Least surprise.** Calendar/Contacts/Reminders are requested only when still `notDetermined`. Denied/restricted stays denied; the dump reports it.
 
